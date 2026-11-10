@@ -62,11 +62,11 @@ templates = Jinja2Templates(directory=config.TEMPLATES_DIR)
 @app.get("/", response_class=HTMLResponse)
 async def serve_mini_app(request: Request):
     """Serves the Telegram Mini App with mandatory opening view and dynamic watermark."""
-    return templates.TemplateResponse("index.html", {"request": request, "config": config})
+    return templates.TemplateResponse(request, "index.html", {"config": config})
 
 @app.get("/app", response_class=HTMLResponse)
 async def serve_mini_app_alias(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request, "config": config})
+    return templates.TemplateResponse(request, "index.html", {"config": config})
 
 @app.get("/r/{ref_code}")
 async def handle_referral_click(ref_code: str):
