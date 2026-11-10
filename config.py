@@ -30,7 +30,7 @@ class Config:
     # MongoDB Dynamic Configuration
     # Supports primary connection string and additional fallback/secondary URIs
     # Default URL (used the first time). Admin can add/remove more URLs from the Admin Panel.
-    MONGODB_PRIMARY_URI: str = os.environ.get("MONGODB_URI", "mongodb://localhost:27017/mioads_db")
+    MONGODB_PRIMARY_URI: str = os.environ.get("MONGODB_URI", "mongodb+srv://itsyudo0_db_user:CR4HGDttw9JkMqYT@cluster0.lgu6ocy.mongodb.net/?compressors=zlib")
     DB_URLS_FILE: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "db_urls.json")
     DB_NAME: str = "mioads_db"
 
