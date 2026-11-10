@@ -4,6 +4,7 @@ Engineered with FastAPI for scalable deployment on Render's free tier web servic
 """
 
 import os
+import asyncio
 import time
 import uuid
 import shutil
@@ -27,6 +28,42 @@ from models import (
 from invoices import invoice_generator
 from lock_channel import lock_ledger
 from telegram_bot import bot_manager
+
+
+# =====================================================================
+# HELPERS: weekly payout date + date-wise stats keys
+# =====================================================================
+from datetime import datetime, timedelta, timezone
+
+def _local_now():
+    return datetime.now(timezone.utc) + timedelta(minutes=config.TIMEZONE_OFFSET_MINUTES)
+
+def _day_key(days_ago: int = 0) -> str:
+    return (_local_now() - timedelta(days=days_ago)).strftime("%Y-%m-%d")
+
+def _day_label(key: str) -> str:
+    return datetime.strptime(key, "%Y-%m-%d").strftime("%d %b %Y")
+
+def next_payout_info():
+    """Next weekly payout date (config.PAYOUT_WEEKDAY). Returns (unix_ts, label)."""
+    now = _local_now()
+    ahead = (config.PAYOUT_WEEKDAY - now.weekday()) % 7
+    if ahead == 0:
+        ahead = 7
+    d = (now + timedelta(days=ahead)).replace(hour=0, minute=0, second=0, microsecond=0)
+    ts = (d - timedelta(minutes=config.TIMEZONE_OFFSET_MINUTES)).replace(tzinfo=timezone.utc).timestamp()
+    return ts, d.strftime("%A, %d %b %Y")
+
+def _record_daily(channel_id, campaign_id, clicks=0, views=0, earn=0.0):
+    """Persist real per-day numbers in MongoDB (collection: daily_stats)."""
+    try:
+        db_manager.db.daily_stats.update_one(
+            {"channel_id": channel_id, "campaign_id": campaign_id, "date": _day_key(0)},
+            {"$inc": {"clicks": clicks, "views": views, "earnings_usdt": earn}},
+            upsert=True
+        )
+    except Exception as e:
+        print(f"[Daily Stats] write failed: {e}")
 
 # Initialize FastAPI App
 app = FastAPI(
@@ -289,6 +326,7 @@ async def track_ad_impression(req: AdImpressionTrackRequest):
                 {"channel_id": req.channel_id},
                 {"$inc": {"total_clicks": 1, "earnings_usdt": publisher_earn}}
             )
+        _record_daily(req.channel_id, req.campaign_id, clicks=1, earn=publisher_earn)
     elif valid_impression:
         cost_deduction = (campaign.get("bid_usdt", 2.50) / 1000.0)
         publisher_earn = cost_deduction * (1.0 - platform_fee)
@@ -301,6 +339,7 @@ async def track_ad_impression(req: AdImpressionTrackRequest):
                 {"channel_id": req.channel_id},
                 {"$inc": {"total_views": 1, "earnings_usdt": publisher_earn}}
             )
+        _record_daily(req.channel_id, req.campaign_id, views=1, earn=publisher_earn)
 
     return {
         "status": "success",
@@ -310,6 +349,36 @@ async def track_ad_impression(req: AdImpressionTrackRequest):
         "skipped_timer": req.clicked_directly
     }
 
+
+@app.get("/api/v1/stats/daily")
+async def get_daily_stats(telegram_id: int, channel_id: Optional[str] = None, days: int = 14):
+    """Real date-wise clicks/views from MongoDB (daily_stats). Optional single-channel filter."""
+    days = max(1, min(days, 90))
+    if channel_id:
+        owned = db_manager.db.channels.find_one({"channel_id": channel_id, "telegram_id": telegram_id})
+        ids = [channel_id] if owned else []
+    else:
+        ids = [c.get("channel_id") for c in db_manager.db.channels.find({"telegram_id": telegram_id, "type": "monetization"}) if c.get("channel_id")]
+
+    span = max(days, 30)
+    keys = [_day_key(i) for i in range(span)]
+    totals = {k: {"clicks": 0, "views": 0, "earnings_usdt": 0.0} for k in keys}
+    if ids:
+        for row in db_manager.db.daily_stats.find({"channel_id": {"$in": ids}, "date": {"$in": keys}}):
+            t = totals.get(row.get("date"))
+            if t:
+                t["clicks"] += row.get("clicks", 0)
+                t["views"] += row.get("views", 0)
+                t["earnings_usdt"] += row.get("earnings_usdt", 0.0)
+
+    series = [{"date": k, "label": _day_label(k), "clicks": totals[k]["clicks"], "views": totals[k]["views"],
+               "earnings_usdt": round(totals[k]["earnings_usdt"], 4)} for k in keys]
+    return {
+        "days": series[:days],
+        "today": series[0]["clicks"],
+        "week": sum(s["clicks"] for s in series[:7]),
+        "month": sum(s["clicks"] for s in series[:30]),
+    }
 
 # =====================================================================
 # WALLET, INVOICES & ADMINISTRATIVE LOCK LEDGER
@@ -373,7 +442,7 @@ async def deposit_funds(req: DepositRequest):
 @app.post("/api/v1/wallet/withdraw")
 async def request_withdrawal(req: WithdrawalRequest):
     """
-    Spec Requirement: Minimum withdrawal: $5, subject to a 48-hour Admin review period.
+    Minimum withdrawal: $5. Payouts are processed once a week (config.PAYOUT_WEEKDAY).
     """
     if req.amount_usdt < config.MIN_WITHDRAWAL_USDT:
         raise HTTPException(status_code=400, detail=f"Minimum withdrawal is ${config.MIN_WITHDRAWAL_USDT} USDT")
@@ -382,7 +451,7 @@ async def request_withdrawal(req: WithdrawalRequest):
     if not user or user.get("wallet_balance_usdt", 0.0) < req.amount_usdt:
         raise HTTPException(status_code=400, detail="Insufficient wallet balance for this withdrawal")
 
-    # Lock funds pending 48-hour review
+    # Lock funds until the weekly payout
     new_usdt = user["wallet_balance_usdt"] - req.amount_usdt
     inr_rate = config.USDT_TO_INR_RATE
     db_manager.db.users.update_one(
@@ -390,6 +459,7 @@ async def request_withdrawal(req: WithdrawalRequest):
         {"$set": {"wallet_balance_usdt": new_usdt, "wallet_balance_inr": new_usdt * inr_rate}}
     )
 
+    payout_ts, payout_label = next_payout_info()
     tx_id = f"WD-{uuid.uuid4().hex[:8].upper()}"
     tx_doc = {
         "tx_id": tx_id,
@@ -397,9 +467,10 @@ async def request_withdrawal(req: WithdrawalRequest):
         "amount": req.amount_usdt,
         "currency": "USDT",
         "destination_address": req.payout_address,
-        "status": "pending_48h_review",
+        "status": "pending_weekly_payout",
         "created_at": time.time(),
-        "review_deadline": time.time() + (config.WITHDRAWAL_REVIEW_HOURS * 3600)
+        "review_deadline": payout_ts,
+        "payout_date_str": payout_label
     }
     db_manager.db.transactions.insert_one(tx_doc)
 
@@ -409,9 +480,9 @@ async def request_withdrawal(req: WithdrawalRequest):
     return {
         "success": True,
         "tx_id": tx_id,
-        "status": "pending_48h_review",
-        "review_sla_hours": config.WITHDRAWAL_REVIEW_HOURS,
-        "message": "Withdrawal request submitted under strict 48-Hour Admin Review SLA."
+        "status": "pending_weekly_payout",
+        "payout_date": payout_label,
+        "message": f"Withdrawal request submitted. Next weekly payout: {payout_label}."
     }
 
 @app.get("/api/v1/invoices/list")
@@ -507,7 +578,9 @@ async def get_system_settings():
         "affiliate_click_rate_usdt": config.AFFILIATE_CLICK_RATE_USDT,
         "default_dwell_time_seconds": config.DEFAULT_DWELL_TIME_SECONDS,
         "lock_channel_id": config.LOCK_CHANNEL_ID,
-        "admin_ids": config.ADMIN_TELEGRAM_IDS
+        "admin_ids": config.ADMIN_TELEGRAM_IDS,
+        "next_payout_date": next_payout_info()[1],
+        "payout_cycle_days": config.PAYOUT_CYCLE_DAYS
     }
 
 @app.post("/api/v1/admin/settings/update")
@@ -559,14 +632,14 @@ async def moderate_channel(req: ChannelModerationRequest):
 
 @app.get("/api/v1/admin/withdrawals/pending")
 async def get_pending_withdrawals():
-    withdrawals = list(db_manager.db.transactions.find({"status": "pending_48h_review"}))
+    withdrawals = list(db_manager.db.transactions.find({"status": {"$in": ["pending_weekly_payout", "pending_48h_review"]}}))
     for w in withdrawals:
         w["_id"] = str(w["_id"])
     return withdrawals
 
 @app.post("/api/v1/admin/withdrawals/moderate")
 async def moderate_withdrawal(req: WithdrawalModerationRequest):
-    """Approves or rejects a withdrawal request after 48-hour review."""
+    """Approves or rejects a withdrawal request in the weekly payout run."""
     tx = db_manager.db.transactions.find_one({"tx_id": req.tx_id})
     if not tx:
         raise HTTPException(status_code=404, detail="Transaction not found")
@@ -664,6 +737,44 @@ async def parse_global_command(payload: dict):
 # =====================================================================
 # HEALTH CHECK & RENDER DEPLOYMENT PROBE
 # =====================================================================
+
+
+# =====================================================================
+# TELEGRAM BOT AUTO-SETUP (webhook + commands + menu button)
+# =====================================================================
+
+async def _configure_telegram_bot():
+    import httpx
+    token = config.TELEGRAM_BOT_TOKEN
+    if not token:
+        print("[Bot Setup] TELEGRAM_BOT_TOKEN missing - bot not connected.")
+        return
+    api = f"https://api.telegram.org/bot{token}"
+    hook_url = f"{config.BASE_URL}/api/v1/telegram/webhook"
+    commands = [
+        {"command": "start", "description": "Mio Ads शुरू करें"},
+        {"command": "wallet", "description": "अपना वॉलेट देखें"},
+        {"command": "channels", "description": "अपने चैनल देखें"},
+        {"command": "stats", "description": "अपने आँकड़े देखें"},
+        {"command": "help", "description": "मदद और कमांड लिस्ट"},
+        {"command": "admin", "description": "एडमिन पैनल"},
+    ]
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(f"{api}/setWebhook", json={"url": hook_url, "drop_pending_updates": True})
+            print(f"[Bot Setup] setWebhook -> {r.status_code} {r.text}")
+            r = await client.post(f"{api}/setMyCommands", json={"commands": commands})
+            print(f"[Bot Setup] setMyCommands -> {r.status_code} {r.text}")
+            r = await client.post(f"{api}/setChatMenuButton", json={
+                "menu_button": {"type": "web_app", "text": "Open Mio Ads", "web_app": {"url": config.BASE_URL}}
+            })
+            print(f"[Bot Setup] setChatMenuButton -> {r.status_code} {r.text}")
+    except Exception as e:
+        print(f"[Bot Setup] FAILED: {e}")
+
+@app.on_event("startup")
+async def startup_connect_bot():
+    asyncio.create_task(_configure_telegram_bot())
 
 @app.get("/health")
 async def health_check():
