@@ -56,7 +56,7 @@ class Config:
     ADMIN_TELEGRAM_IDS: List[int] = []
     # Admin login token. SET THIS (or env ADMIN_TOKEN) before deploying.
     ADMIN_TOKEN_PLACEHOLDER: str = "CHANGE_THIS_ADMIN_TOKEN"
-    ADMIN_TOKEN: str = os.environ.get("ADMIN_TOKEN", "Kx9mP2vQ7rT4wZ8nB5cL1hJ6dF3sA0yE)
+    ADMIN_TOKEN: str = os.environ.get("ADMIN_TOKEN", "Kx9mP2vQ7rT4wZ8nB5cL1hJ6dF3sA0yE")
     ADMIN_SESSION_HOURS: int = 12
 
     # Localization Defaults
