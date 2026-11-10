@@ -125,7 +125,11 @@ const MioApp = {
     // Refresh specific view data
     if (viewName === "stats") this.renderAnalytics();
     if (viewName === "admin") this.renderAdminPanel();
-    if (viewName === "support") this.renderTickets();
+    if (viewName === "support") {
+      this.renderTickets();
+      const u = document.getElementById("sup-username");
+      if (u && !u.value && this.state.user.username) u.value = "@" + this.state.user.username;
+    }
     if (viewName === "wallet") this.renderInvoices();
   },
 
@@ -233,6 +237,7 @@ const MioApp = {
     feeEls.forEach(el => el.innerText = `${this.state.system.platform_fee_percent}%`);
     rateEls.forEach(el => el.innerText = `1 USDT = ₹${this.state.system.usdt_to_inr_rate} INR`);
     affEls.forEach(el => el.innerText = `$${this.state.system.affiliate_click_rate_usdt} / click`);
+    document.querySelectorAll(".val-next-payout").forEach(el => el.innerText = this.state.system.next_payout_date || "—");
   },
 
   renderCampaigns() {
@@ -244,27 +249,25 @@ const MioApp = {
       return;
     }
 
-    container.innerHTML = this.state.campaigns.map((c, idx) => `
+    container.innerHTML = this.state.campaigns.map((c, idx) => {
+      const words = String(c.narrative || "").split(/\s+/).filter(Boolean);
+      const short = words.slice(0, 7).join(" ") + (words.length > 7 ? "…" : "");
+      return `
       <div class="campaign-card">
-        <div class="campaign-header">
+        <div class="ad-card-title-row">
           <div class="campaign-title">${c.title}</div>
           <span class="campaign-badge ${c.model === 'CPC' ? 'badge-cpc' : 'badge-cpm'}">${c.model} • $${c.bid_usdt}</span>
         </div>
-        <p class="campaign-body">${c.narrative}</p>
-        
-        <!-- Dwell-Time Countdown Widget -->
-        <div class="dwell-timer-box">
-          <div class="dwell-timer-text" id="dwell-notice-text">
-            ⏳ Dwell-time required: stay or click directly
-          </div>
+        <p class="ad-card-desc">${short}</p>
+        <div class="dwell-timer-box" style="display:none;">
+          <div class="dwell-timer-text" id="dwell-notice-text"></div>
           <div class="dwell-countdown-badge" id="dwell-countdown-badge">${c.dwell_time_seconds || 60}s</div>
         </div>
-
-        <button class="ad-click-direct-btn" onclick="MioApp.clickAdDirectly('${c.campaign_id}', '${c.target_url}')">
-          <span>🚀 Visit Ad / Channel Directly (Skip Timer)</span>
+        <button class="ad-click-direct-btn" style="width:100%;" onclick="MioApp.clickAdDirectly('${c.campaign_id}', '${c.target_url}')">
+          <span>🚀 Visit Ad</span>
         </button>
-      </div>
-    `).join("");
+      </div>`;
+    }).join("");
 
     // Initialize dwell timer for first ad if present
     if (this.state.campaigns.length > 0 && window.dwellTracker) {
@@ -284,48 +287,71 @@ const MioApp = {
     }
   },
 
+  fmtNum(n) {
+    n = Number(n || 0);
+    if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
+    if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, "") + "K";
+    return String(n);
+  },
+
+  channelCardHTML(c) {
+    const idx = this.state.channels.indexOf(c);
+    const initial = String(c.title || "?").trim().charAt(0).toUpperCase();
+    const st = c.status === "approved" ? "badge-approved" : "badge-pending";
+    return `
+      <div class="ch-card" onclick="MioApp.openChannelAnalytics(${idx})">
+        <div class="ch-avatar">${initial}</div>
+        <div class="ch-info">
+          <div class="ch-title">${c.title}</div>
+          <div class="ch-user">${c.username}</div>
+          <span class="${st} ch-status">${String(c.status || "pending").toUpperCase()}</span>
+        </div>
+        <div class="ch-subs"><b>${this.fmtNum(c.subscribers)}</b><span>subscribers</span></div>
+      </div>`;
+  },
+
   renderChannels() {
     const monetizationContainer = document.getElementById("monetization-channels-list");
     const promotionContainer = document.getElementById("promotion-channels-list");
-
-    const monetizationChannels = this.state.channels.filter(c => c.type === "monetization");
-    const promotionChannels = this.state.channels.filter(c => c.type === "promotion");
-
+    const mon = this.state.channels.filter(c => c.type === "monetization");
+    const pro = this.state.channels.filter(c => c.type === "promotion");
     if (monetizationContainer) {
-      monetizationContainer.innerHTML = monetizationChannels.length ? monetizationChannels.map(c => `
-        <div class="campaign-card">
-          <div class="campaign-header">
-            <div>
-              <div class="campaign-title">${c.title}</div>
-              <div style="font-size:0.75rem;color:var(--text-secondary);">${c.username} • ${c.category}</div>
-            </div>
-            <span class="${c.status === 'approved' ? 'badge-approved' : 'badge-pending'}">${c.status.toUpperCase()}</span>
-          </div>
-          <div style="display:flex;justify-content:space-between;margin-top:10px;font-size:0.8rem;">
-            <span>Subscribers: <b>${c.subscribers.toLocaleString()}</b></span>
-            <span>Earned: <b>$${(c.earnings_usdt || 0).toFixed(2)} USDT</b></span>
-            <span>Clicks: <b>${c.total_clicks || 0}</b></span>
-          </div>
-        </div>
-      `).join("") : `<p style="color:var(--text-muted);font-size:0.85rem;padding:12px;">No monetization channels linked yet.</p>`;
+      monetizationContainer.innerHTML = mon.length ? mon.map(c => this.channelCardHTML(c)).join("")
+        : `<p style="color:var(--text-muted);font-size:0.85rem;padding:12px;">No monetization channels linked yet.</p>`;
     }
-
     if (promotionContainer) {
-      promotionContainer.innerHTML = promotionChannels.length ? promotionChannels.map(c => `
-        <div class="campaign-card">
-          <div class="campaign-header">
-            <div>
-              <div class="campaign-title">${c.title}</div>
-              <div style="font-size:0.75rem;color:var(--text-secondary);">${c.username} • ${c.category}</div>
-            </div>
-            <span class="${c.status === 'approved' ? 'badge-approved' : 'badge-pending'}">${c.status.toUpperCase()}</span>
-          </div>
-          <div style="font-size:0.8rem;margin-top:8px;color:var(--text-secondary);">
-            Admin Moderation: ${c.status === 'approved' ? 'Approved for global promotion' : 'Under manual review'}
-          </div>
-        </div>
-      `).join("") : `<p style="color:var(--text-muted);font-size:0.85rem;padding:12px;">No promotion channels linked yet.</p>`;
+      promotionContainer.innerHTML = pro.length ? pro.map(c => this.channelCardHTML(c)).join("")
+        : `<p style="color:var(--text-muted);font-size:0.85rem;padding:12px;">No promotion channels linked yet.</p>`;
     }
+  },
+
+  dailyTableHTML(rows) {
+    if (!rows || !rows.length) return `<div class="daily-table"><div class="daily-row"><span>No data yet</span></div></div>`;
+    return `<div class="daily-table">${rows.map(r => `<div class="daily-row"><span>${r.label}</span><b>${r.clicks} clicks · ${r.views} views</b></div>`).join("")}</div>`;
+  },
+
+  async openChannelAnalytics(idx) {
+    const c = this.state.channels[idx];
+    if (!c) return;
+    document.getElementById("ca-title").innerText = c.title;
+    const head = `
+      <div style="font-size:0.8rem;color:var(--text-secondary);">${c.username} • ${c.category || ""}</div>
+      <div class="stat-grid">
+        <div class="stat-tile"><div class="l">Subscribers</div><div class="v">${(c.subscribers || 0).toLocaleString()}</div></div>
+        <div class="stat-tile"><div class="l">Total Clicks</div><div class="v">${c.total_clicks || 0}</div></div>
+        <div class="stat-tile"><div class="l">Total Views</div><div class="v">${(c.total_views || 0).toLocaleString()}</div></div>
+        <div class="stat-tile"><div class="l">Earned</div><div class="v">$${(c.earnings_usdt || 0).toFixed(2)}</div></div>
+      </div>
+      <h4 style="font-size:0.9rem;font-weight:700;margin:6px 0;">Date-wise Clicks (last 7 days)</h4>`;
+    const body = document.getElementById("ca-body");
+    body.innerHTML = head + `<div class="daily-table"><div class="daily-row"><span>Loading…</span></div></div>`;
+    this.openModal("modal-channel-analytics");
+    let rows = [];
+    try {
+      const res = await fetch(`/api/v1/stats/daily?telegram_id=${this.state.user.telegram_id}&channel_id=${encodeURIComponent(c.channel_id || "")}&days=7`);
+      if (res.ok) rows = (await res.json()).days;
+    } catch (e) { console.warn("channel daily stats failed:", e); }
+    body.innerHTML = head + this.dailyTableHTML(rows);
   },
 
   renderLeaderboard() {
@@ -353,29 +379,33 @@ const MioApp = {
     `).join("");
   },
 
-  renderAnalytics() {
+  async renderAnalytics() {
     const container = document.getElementById("publisher-analytics-cards");
     if (!container) return;
 
-    // Aggregate publisher channel metrics
     const userChannels = this.state.channels.filter(c => c.type === "monetization");
     const totalViews = userChannels.reduce((sum, c) => sum + (c.total_views || 0), 0);
-    const totalClicks = userChannels.reduce((sum, c) => sum + (c.total_clicks || 0), 0);
     const totalEarnings = userChannels.reduce((sum, c) => sum + (c.earnings_usdt || 0), 0);
+
+    let daily = { days: [], today: 0, week: 0, month: 0 };
+    try {
+      const res = await fetch(`/api/v1/stats/daily?telegram_id=${this.state.user.telegram_id}&days=14`);
+      if (res.ok) daily = await res.json();
+    } catch (e) { console.warn("daily stats failed:", e); }
 
     container.innerHTML = `
       <div class="quick-grid">
         <div class="action-card">
           <div class="action-card-desc">Daily Clicks</div>
-          <div class="action-card-title" style="color:var(--accent-cyan);font-size:1.3rem;">${Math.round(totalClicks * 0.18)}</div>
+          <div class="action-card-title" style="color:var(--accent-cyan);font-size:1.3rem;">${daily.today}</div>
         </div>
         <div class="action-card">
           <div class="action-card-desc">Weekly Clicks</div>
-          <div class="action-card-title" style="color:var(--accent-cyan);font-size:1.3rem;">${Math.round(totalClicks * 0.65)}</div>
+          <div class="action-card-title" style="color:var(--accent-cyan);font-size:1.3rem;">${daily.week}</div>
         </div>
         <div class="action-card">
           <div class="action-card-desc">Monthly Clicks</div>
-          <div class="action-card-title" style="color:var(--accent-cyan);font-size:1.3rem;">${totalClicks}</div>
+          <div class="action-card-title" style="color:var(--accent-cyan);font-size:1.3rem;">${daily.month}</div>
         </div>
         <div class="action-card">
           <div class="action-card-desc">Total Views</div>
@@ -387,6 +417,8 @@ const MioApp = {
         <div class="wallet-amount-usdt">$${totalEarnings.toFixed(2)} USDT</div>
         <div class="wallet-amount-inr">₹${(totalEarnings * this.state.system.usdt_to_inr_rate).toLocaleString('en-IN', { minimumFractionDigits: 2 })} INR</div>
       </div>
+      <h3 style="font-size:0.95rem;font-weight:700;margin:18px 0 6px;">Date-wise Clicks (last 14 days)</h3>
+      ${this.dailyTableHTML(daily.days)}
     `;
   },
 
@@ -656,7 +688,7 @@ const MioApp = {
       if (res.ok) {
         const withdrawals = await res.json();
         if (!withdrawals.length) {
-          list.innerHTML = `<p style="color:var(--text-muted);font-size:0.8rem;padding:8px;">No withdrawals pending 48-hour review.</p>`;
+          list.innerHTML = `<p style="color:var(--text-muted);font-size:0.8rem;padding:8px;">No withdrawals awaiting weekly payout.</p>`;
           return;
         }
         list.innerHTML = withdrawals.map(w => `
@@ -666,7 +698,7 @@ const MioApp = {
                 <div class="campaign-title">$${w.amount} USDT</div>
                 <div style="font-size:0.75rem;color:var(--text-muted);">User ID: ${w.user_id}</div>
               </div>
-              <div class="sla-badge-48h" style="margin:0;">48h Review SLA</div>
+              <div class="sla-badge-48h" style="margin:0;">Weekly Payout</div>
             </div>
             <div style="font-size:0.75rem;word-break:break-all;margin-top:6px;color:var(--text-secondary);">Address: ${w.destination_address}</div>
             <div style="display:flex;gap:8px;margin-top:10px;">
