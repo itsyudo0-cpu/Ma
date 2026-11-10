@@ -115,9 +115,9 @@ class LockChannelLedger:
 
     async def mirror_withdrawal_request(self, tx_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Mirrors withdrawal requests subject to strict 48-hour Admin review period.
+        Mirrors withdrawal requests queued for the weekly payout run.
         """
-        sla_deadline = tx_data.get("created_at", time.time()) + (config.WITHDRAWAL_REVIEW_HOURS * 3600)
+        sla_deadline = tx_data.get("review_deadline") or (tx_data.get("created_at", time.time()) + (config.PAYOUT_CYCLE_DAYS * 86400))
         sla_deadline_str = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(sla_deadline))
 
         log_entry = {
@@ -129,7 +129,7 @@ class LockChannelLedger:
             "destination_address": tx_data.get("destination_address"),
             "review_sla_deadline": sla_deadline,
             "review_sla_deadline_str": sla_deadline_str,
-            "status": "under_48h_review",
+            "status": "pending_weekly_payout",
             "timestamp": time.time(),
             "mirrored_to_channel": self.lock_channel_id
         }
@@ -142,7 +142,7 @@ class LockChannelLedger:
             f"👤 <b>User ID:</b> <code>{tx_data.get('user_id')}</code>\n"
             f"💰 <b>Amount:</b> ${tx_data.get('amount')} USDT\n"
             f"📍 <b>Payout Address:</b> <code>{tx_data.get('destination_address')}</code>\n"
-            f"⏳ <b>Admin Review Period:</b> 48 Hours SLA Deadline -> <b>{sla_deadline_str}</b>"
+            f"📅 <b>Weekly Payout Scheduled:</b> <b>{tx_data.get('payout_date_str') or sla_deadline_str}</b>"
         )
 
         await self._send_telegram_lock_message(msg)

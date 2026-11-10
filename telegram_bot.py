@@ -115,7 +115,7 @@ class TelegramBotManager:
                 f"💵 <b>USDT Balance:</b> ${usdt:.2f} USDT\n"
                 f"🇮🇳 <b>INR Balance:</b> ₹{inr:,.2f} INR (@ ₹{config.USDT_TO_INR_RATE})\n\n"
                 f"• Minimum Deposit: ₹500 (UPI) / $10 USDT\n"
-                f"• Minimum Withdrawal: $5 USDT (48h Admin Audit SLA)"
+                f"• Minimum Withdrawal: $5 USDT (Weekly Payout)"
             )
             reply_markup = self.build_webapp_inline_keyboard("💳 Open Wallet in Mini App")
 

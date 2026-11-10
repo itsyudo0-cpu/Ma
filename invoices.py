@@ -178,7 +178,7 @@ class InvoiceGenerator:
         # Summary Subtotal row
         table_data.append([
             Paragraph("<b>TOTAL SETTLED AMOUNT</b>", body_style),
-            Paragraph("<b>48h Lock Verifiable</b>", body_style),
+            Paragraph("<b>Lock Ledger Verified</b>", body_style),
             Paragraph(f"<b>${net_amount:.2f} USDT</b>", body_style),
             Paragraph(f"<b>Rs. {net_inr:,.2f} INR</b>", body_style),
             Paragraph(f"<font color='#059669'><b>${net_amount:.2f} USDT</b></font>", body_style)
@@ -210,7 +210,7 @@ class InvoiceGenerator:
             f"• <b>Hash Reference:</b> SHA256_{uuid.uuid4().hex[:24]}<br/>"
             f"• <b>Lock Channel Destination:</b> {config.LOCK_CHANNEL_ID} ({config.LOCK_CHANNEL_TITLE})<br/>"
             f"• <b>Metadata Captured:</b> User ID: {user_id} | Language: {chosen_lang} | Region: {country} | Rate: $1 = {inr_rate} INR<br/>"
-            f"• <b>Review SLA Policy:</b> Withdrawals are audited under strict {config.WITHDRAWAL_REVIEW_HOURS}-Hour Administrative Review."
+            f"• <b>Review SLA Policy:</b> Withdrawals are paid out in a weekly payout cycle after Administrative Review."
         )
         elements.append(Paragraph(lock_meta_text, body_style))
         elements.append(Spacer(1, 25))

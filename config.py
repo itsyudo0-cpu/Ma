@@ -16,7 +16,7 @@ class Config:
     BASE_URL: str = "https://ma-ofmm.onrender.com"
 
     # Telegram Bot & Mini App
-    TELEGRAM_BOT_TOKEN: str = "9288636276:AAGpdxRoYSXdaoy4bqVttFgDOU6VJfaxEdc"
+    TELEGRAM_BOT_TOKEN: str = "9288636276:AAHppMVE_ghxA-jDw-6ElhMhfcwuAaSDZdQ"
     TELEGRAM_BOT_NAME: str = "mioads bot"
     TELEGRAM_BOT_USERNAME: str = "mioadsbot"
     TELEGRAM_CHANNEL_NAME: str = "Mioads"
@@ -30,7 +30,7 @@ class Config:
     # MongoDB Dynamic Configuration
     # Supports primary connection string and additional fallback/secondary URIs
     # Default URL (used the first time). Admin can add/remove more URLs from the Admin Panel.
-    MONGODB_PRIMARY_URI: str = os.environ.get("MONGODB_URI", "mongodb+srv://itsyudo0_db_user:CR4HGDttw9JkMqYT@cluster0.lgu6ocy.mongodb.net/?compressors=zlib")
+    MONGODB_PRIMARY_URI: str = os.environ.get("MONGODB_URI", "mongodb://localhost:27017/mioads_db")
     DB_URLS_FILE: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "db_urls.json")
     DB_NAME: str = "mioads_db"
 
@@ -40,7 +40,10 @@ class Config:
     MIN_DEPOSIT_INR: float = 500.0             # Minimum 500 INR via UPI
     MIN_DEPOSIT_USDT: float = 10.0             # Minimum $10 USDT
     MIN_WITHDRAWAL_USDT: float = 5.0           # Minimum $5 USDT withdrawal
-    WITHDRAWAL_REVIEW_HOURS: int = 48          # Strict 48-hour Admin review period
+    PAYOUT_CYCLE_DAYS: int = 7                 # Weekly payout cycle
+    PAYOUT_WEEKDAY: int = 0                    # Payout day: 0=Monday ... 6=Sunday
+    WITHDRAWAL_REVIEW_HOURS: int = 168         # (legacy) = 7 days, weekly payout cycle
+    TIMEZONE_OFFSET_MINUTES: int = 330         # IST (UTC+5:30) - used for date-wise stats
     SUPPORT_SLA_HOURS: int = 24                # Strict 24-hour response SLA
 
     # Advertising & Traffic Logic
