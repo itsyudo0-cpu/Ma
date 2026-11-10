@@ -16,7 +16,7 @@ class Config:
     BASE_URL: str = "https://ma-ofmm.onrender.com"
 
     # Telegram Bot & Mini App
-    TELEGRAM_BOT_TOKEN: str = "9288636276:AAHppMVE_ghxA-jDw-6ElhMhfcwuAaSDZdQ"
+    TELEGRAM_BOT_TOKEN: str = "9288636276:AAGpdxRoYSXdaoy4bqVttFgDOU6VJfaxEdc"
     TELEGRAM_BOT_NAME: str = "mioads bot"
     TELEGRAM_BOT_USERNAME: str = "mioadsbot"
     TELEGRAM_CHANNEL_NAME: str = "Mioads"
