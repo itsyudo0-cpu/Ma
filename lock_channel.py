@@ -4,6 +4,7 @@ Securely mirrors all ticket activities, user logs, channel moderation events,
 and complete invoice metadata instantaneously to the private administrative 'Lock Channel'.
 """
 
+import os
 import time
 import httpx
 from typing import Dict, Any, Optional
@@ -17,22 +18,36 @@ class LockChannelLedger:
         self.bot_token = config.TELEGRAM_BOT_TOKEN
 
     async def _send_telegram_lock_message(self, text: str, document_path: Optional[str] = None) -> bool:
-        """Sends message to the private Telegram Lock Channel if token is valid, without blocking."""
+        """Sends a message (and the PDF, if given) to the private Lock Channel. Logs Telegram's answer."""
         if not self.bot_token or "Example_" in self.bot_token:
+            print("[Lock Channel ERROR] No bot token configured")
             return False
-
-        url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+        api = f"https://api.telegram.org/bot{self.bot_token}"
+        ok = False
         try:
-            async with httpx.AsyncClient(timeout=4.0) as client:
-                resp = await client.post(url, json={
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                resp = await client.post(f"{api}/sendMessage", json={
                     "chat_id": self.lock_channel_id,
                     "text": text,
                     "parse_mode": "HTML"
                 })
-                return resp.status_code == 200
+                ok = resp.status_code == 200
+                if not ok:
+                    print(f"[Lock Channel ERROR] sendMessage {resp.status_code}: {resp.text}")
+                if document_path and os.path.exists(document_path):
+                    with open(document_path, "rb") as fh:
+                        r2 = await client.post(
+                            f"{api}/sendDocument",
+                            data={"chat_id": self.lock_channel_id, "caption": "🔒 Invoice PDF backup"},
+                            files={"document": (os.path.basename(document_path), fh, "application/pdf")}
+                        )
+                    if r2.status_code != 200:
+                        print(f"[Lock Channel ERROR] sendDocument {r2.status_code}: {r2.text}")
+                    ok = ok and r2.status_code == 200
         except Exception as e:
-            print(f"[Lock Channel Warning] Telegram API mirror notice: {e}")
+            print(f"[Lock Channel ERROR] Telegram API: {e}")
             return False
+        return ok
 
     async def mirror_invoice(self, invoice_meta: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -72,7 +87,7 @@ class LockChannelLedger:
             f"📎 <b>Download PDF:</b> {invoice_meta.get('web_url')}"
         )
 
-        await self._send_telegram_lock_message(msg)
+        await self._send_telegram_lock_message(msg, document_path=invoice_meta.get("filepath"))
         print(f"[Lock Channel Mirror] Invoice {invoice_meta.get('invoice_id')} mirrored successfully.")
         return log_entry
 

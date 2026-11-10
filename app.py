@@ -5,6 +5,8 @@ Engineered with FastAPI for scalable deployment on Render's free tier web servic
 
 import os
 import asyncio
+import hmac
+import secrets
 import time
 import uuid
 import shutil
@@ -23,7 +25,8 @@ from models import (
     CampaignCreateRequest, DepositRequest, WithdrawalRequest,
     WithdrawalModerationRequest, TicketCreateRequest, TicketResponseRequest,
     AffiliateApplyRequest, AffiliateModerationRequest, SystemSettingsUpdateRequest,
-    DatabaseSwitchRequest, DatabaseTestRequest, BroadcastRequest, AdImpressionTrackRequest
+    DatabaseSwitchRequest, DatabaseTestRequest, BroadcastRequest, AdImpressionTrackRequest,
+    AdminLoginRequest, AdminManageRequest, DatabaseAddRequest, DatabaseRemoveRequest
 )
 from invoices import invoice_generator
 from lock_channel import lock_ledger
@@ -91,6 +94,92 @@ os.makedirs(config.TEMPLATES_DIR, exist_ok=True)
 app.mount("/static", StaticFiles(directory=config.STATIC_DIR), name="static")
 templates = Jinja2Templates(directory=config.TEMPLATES_DIR)
 
+
+
+# =====================================================================
+# ADMIN AUTH (token login -> session stored in MongoDB)
+# =====================================================================
+
+async def require_admin(request: Request):
+    """Every /api/v1/admin/* route (except login) needs a valid X-Admin-Session header."""
+    sid = request.headers.get("X-Admin-Session", "")
+    sess = db_manager.db.admin_sessions.find_one({"session_id": sid}) if sid else None
+    if not sess or sess.get("expires_at", 0) < time.time():
+        raise HTTPException(status_code=401, detail="Admin session required")
+    user = db_manager.db.users.find_one({"telegram_id": sess["telegram_id"]})
+    if not user or user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Not an admin")
+    return sess["telegram_id"]
+
+def _ensure_user(telegram_id: int):
+    user = db_manager.db.users.find_one({"telegram_id": telegram_id})
+    if not user:
+        db_manager.db.users.insert_one({
+            "telegram_id": telegram_id,
+            "username": f"user_{telegram_id}",
+            "first_name": "Telegram User",
+            "role": "user",
+            "preferred_currency": "USDT",
+            "language": config.DEFAULT_LANGUAGE,
+            "wallet_balance_usdt": 10.00,
+            "wallet_balance_inr": 800.00,
+            "api_key": f"mio_usr_key_{telegram_id}_{int(time.time())}",
+            "referral_code": f"REF{telegram_id}",
+            "referred_by": None,
+            "total_referral_clicks": 0,
+            "is_affiliate_approved": False,
+            "created_at": time.time()
+        })
+
+@app.post("/api/v1/admin/login")
+async def admin_login(req: AdminLoginRequest):
+    """Login with Telegram ID + ADMIN_TOKEN (config.py). The first successful login makes that ID an admin."""
+    expected = config.ADMIN_TOKEN or ""
+    if not expected or expected == config.ADMIN_TOKEN_PLACEHOLDER:
+        raise HTTPException(status_code=403, detail="ADMIN_TOKEN is not configured on the server")
+    if not hmac.compare_digest((req.token or "").encode(), expected.encode()):
+        raise HTTPException(status_code=403, detail="Invalid admin token")
+    _ensure_user(req.telegram_id)
+    db_manager.db.users.update_one({"telegram_id": req.telegram_id}, {"$set": {"role": "admin"}})
+    sid = secrets.token_urlsafe(32)
+    db_manager.db.admin_sessions.insert_one({
+        "session_id": sid,
+        "telegram_id": req.telegram_id,
+        "created_at": time.time(),
+        "expires_at": time.time() + config.ADMIN_SESSION_HOURS * 3600
+    })
+    return {"success": True, "session_id": sid, "expires_in_hours": config.ADMIN_SESSION_HOURS}
+
+@app.get("/api/v1/admin/admins")
+async def list_admins(admin_id: int = Depends(require_admin)):
+    out = []
+    for u in db_manager.db.users.find({"role": "admin"}):
+        out.append({"telegram_id": u.get("telegram_id"), "first_name": u.get("first_name"), "username": u.get("username")})
+    return out
+
+@app.post("/api/v1/admin/admins/add")
+async def add_admin(req: AdminManageRequest, admin_id: int = Depends(require_admin)):
+    _ensure_user(req.telegram_id)
+    db_manager.db.users.update_one({"telegram_id": req.telegram_id}, {"$set": {"role": "admin"}})
+    return {"success": True}
+
+@app.post("/api/v1/admin/admins/remove")
+async def remove_admin(req: AdminManageRequest, admin_id: int = Depends(require_admin)):
+    if req.telegram_id == admin_id:
+        raise HTTPException(status_code=400, detail="You cannot remove yourself")
+    if db_manager.db.users.count_documents({"role": "admin"}) <= 1:
+        raise HTTPException(status_code=400, detail="Cannot remove the last admin")
+    db_manager.db.users.update_one({"telegram_id": req.telegram_id}, {"$set": {"role": "user"}})
+    db_manager.db.admin_sessions.delete_many({"telegram_id": req.telegram_id})
+    return {"success": True}
+
+@app.post("/api/v1/admin/database/add")
+async def admin_add_database(req: DatabaseAddRequest, admin_id: int = Depends(require_admin)):
+    return db_manager.add_url(req.uri)
+
+@app.post("/api/v1/admin/database/remove")
+async def admin_remove_database(req: DatabaseRemoveRequest, admin_id: int = Depends(require_admin)):
+    return db_manager.remove_url(req.db_id)
 
 # =====================================================================
 # FRONTEND VIEWS & DEEP LINKS
@@ -583,7 +672,7 @@ async def get_system_settings():
         "payout_cycle_days": config.PAYOUT_CYCLE_DAYS
     }
 
-@app.post("/api/v1/admin/settings/update")
+@app.post("/api/v1/admin/settings/update", dependencies=[Depends(require_admin)])
 async def update_system_settings(req: SystemSettingsUpdateRequest):
     """Admin retains control to configure platform fee, exchange rate, and thresholds anytime."""
     if req.platform_fee_percent is not None:
@@ -609,14 +698,14 @@ async def update_system_settings(req: SystemSettingsUpdateRequest):
     )
     return {"success": True, "settings": await get_system_settings()}
 
-@app.get("/api/v1/admin/channels/pending")
+@app.get("/api/v1/admin/channels/pending", dependencies=[Depends(require_admin)])
 async def get_pending_channels():
     channels = list(db_manager.db.channels.find({"status": "pending"}))
     for ch in channels:
         ch["_id"] = str(ch["_id"])
     return channels
 
-@app.post("/api/v1/admin/channels/moderate")
+@app.post("/api/v1/admin/channels/moderate", dependencies=[Depends(require_admin)])
 async def moderate_channel(req: ChannelModerationRequest):
     """Admin moderation for linked channels."""
     channel = db_manager.db.channels.find_one({"channel_id": req.channel_id})
@@ -630,14 +719,14 @@ async def moderate_channel(req: ChannelModerationRequest):
     await lock_ledger.mirror_channel_moderation(channel, req.action, req.admin_id)
     return {"success": True, "channel_id": req.channel_id, "status": req.action}
 
-@app.get("/api/v1/admin/withdrawals/pending")
+@app.get("/api/v1/admin/withdrawals/pending", dependencies=[Depends(require_admin)])
 async def get_pending_withdrawals():
     withdrawals = list(db_manager.db.transactions.find({"status": {"$in": ["pending_weekly_payout", "pending_48h_review"]}}))
     for w in withdrawals:
         w["_id"] = str(w["_id"])
     return withdrawals
 
-@app.post("/api/v1/admin/withdrawals/moderate")
+@app.post("/api/v1/admin/withdrawals/moderate", dependencies=[Depends(require_admin)])
 async def moderate_withdrawal(req: WithdrawalModerationRequest):
     """Approves or rejects a withdrawal request in the weekly payout run."""
     tx = db_manager.db.transactions.find_one({"tx_id": req.tx_id})
@@ -661,23 +750,23 @@ async def moderate_withdrawal(req: WithdrawalModerationRequest):
 
     return {"success": True, "tx_id": req.tx_id, "status": new_status}
 
-@app.get("/api/v1/admin/database/status")
+@app.get("/api/v1/admin/database/status", dependencies=[Depends(require_admin)])
 async def get_database_status():
     """Returns dynamic MongoDB connection pool status for Admin Panel."""
     return db_manager.get_database_status()
 
-@app.post("/api/v1/admin/database/switch")
+@app.post("/api/v1/admin/database/switch", dependencies=[Depends(require_admin)])
 async def switch_database_uri(req: DatabaseSwitchRequest):
     """Switches active MongoDB connection to dynamic URL via Admin Panel."""
     result = db_manager.switch_database_uri(req.uri_index or 0, req.custom_uri)
     return result
 
-@app.post("/api/v1/admin/database/test")
+@app.post("/api/v1/admin/database/test", dependencies=[Depends(require_admin)])
 async def test_database_connection(req: DatabaseTestRequest):
     """Tests latency to any external MongoDB URI."""
     return db_manager.test_connection(req.uri)
 
-@app.post("/api/v1/admin/broadcast")
+@app.post("/api/v1/admin/broadcast", dependencies=[Depends(require_admin)])
 async def trigger_global_broadcast(req: BroadcastRequest):
     """Spec Requirement: Trigger a manual global broadcast across all channels."""
     broadcast_doc = {
@@ -702,7 +791,7 @@ async def trigger_global_broadcast(req: BroadcastRequest):
     broadcast_doc["_id"] = str(broadcast_doc["_id"])
     return {"success": True, "broadcast": broadcast_doc}
 
-@app.get("/api/v1/admin/lock-ledger/logs")
+@app.get("/api/v1/admin/lock-ledger/logs", dependencies=[Depends(require_admin)])
 async def get_lock_ledger_logs():
     logs = list(db_manager.db.lock_ledger.find({}, {"_id": 0}).sort("timestamp", -1).limit(50))
     return logs
@@ -744,33 +833,60 @@ async def parse_global_command(payload: dict):
 # =====================================================================
 
 async def _configure_telegram_bot():
+    """Sets webhook + commands + menu button. Returns Telegram's answers (also printed to logs)."""
     import httpx
     token = config.TELEGRAM_BOT_TOKEN
+    result = {}
     if not token:
         print("[Bot Setup] TELEGRAM_BOT_TOKEN missing - bot not connected.")
-        return
+        return {"error": "TELEGRAM_BOT_TOKEN missing"}
     api = f"https://api.telegram.org/bot{token}"
     hook_url = f"{config.BASE_URL}/api/v1/telegram/webhook"
     commands = [
-        {"command": "start", "description": "Mio Ads शुरू करें"},
-        {"command": "wallet", "description": "अपना वॉलेट देखें"},
-        {"command": "channels", "description": "अपने चैनल देखें"},
-        {"command": "stats", "description": "अपने आँकड़े देखें"},
-        {"command": "help", "description": "मदद और कमांड लिस्ट"},
-        {"command": "admin", "description": "एडमिन पैनल"},
+        {"command": "start", "description": "Start Mio Ads"},
+        {"command": "wallet", "description": "View your wallet"},
+        {"command": "channels", "description": "View your channels"},
+        {"command": "stats", "description": "View your stats"},
+        {"command": "help", "description": "Help and command list"},
+        {"command": "admin", "description": "Admin panel"},
     ]
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            r = await client.post(f"{api}/setWebhook", json={"url": hook_url, "drop_pending_updates": True})
-            print(f"[Bot Setup] setWebhook -> {r.status_code} {r.text}")
-            r = await client.post(f"{api}/setMyCommands", json={"commands": commands})
-            print(f"[Bot Setup] setMyCommands -> {r.status_code} {r.text}")
-            r = await client.post(f"{api}/setChatMenuButton", json={
-                "menu_button": {"type": "web_app", "text": "Open Mio Ads", "web_app": {"url": config.BASE_URL}}
-            })
-            print(f"[Bot Setup] setChatMenuButton -> {r.status_code} {r.text}")
+            steps = [
+                ("setWebhook", {"url": hook_url, "drop_pending_updates": False}),
+                ("setMyCommands", {"commands": commands}),
+                ("setChatMenuButton", {"menu_button": {"type": "web_app", "text": "Open Mio Ads", "web_app": {"url": config.BASE_URL}}}),
+            ]
+            for name, body in steps:
+                r = await client.post(f"{api}/{name}", json=body)
+                result[name] = r.json() if r.headers.get("content-type", "").startswith("application/json") else r.text
+                print(f"[Bot Setup] {name} -> {r.status_code} {r.text}")
     except Exception as e:
         print(f"[Bot Setup] FAILED: {e}")
+        result["error"] = str(e)
+    return result
+
+@app.get("/api/v1/telegram/status")
+async def telegram_status(fix: int = 0, test_lock: int = 0):
+    """Open in browser to see if the bot is connected. ?fix=1 re-runs setup, ?test_lock=1 posts a test to the Lock Channel."""
+    import httpx
+    token = config.TELEGRAM_BOT_TOKEN
+    if not token:
+        return {"error": "TELEGRAM_BOT_TOKEN missing in config.py"}
+    out = {"webhook_url_expected": f"{config.BASE_URL}/api/v1/telegram/webhook"}
+    if fix:
+        out["setup"] = await _configure_telegram_bot()
+    api = f"https://api.telegram.org/bot{token}"
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            out["getMe"] = (await client.post(f"{api}/getMe")).json()
+            out["getWebhookInfo"] = (await client.post(f"{api}/getWebhookInfo")).json()
+            if test_lock:
+                r = await client.post(f"{api}/sendMessage", json={"chat_id": config.LOCK_CHANNEL_ID, "text": "✅ Mio Ads Lock Channel test message"})
+                out["lock_channel_test"] = r.json()
+    except Exception as e:
+        out["error"] = str(e)
+    return out
 
 @app.on_event("startup")
 async def startup_connect_bot():

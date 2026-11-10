@@ -62,6 +62,7 @@ class TelegramBotManager:
         first_name = user.get("first_name", "Telegram User")
         username = user.get("username", "")
         text = msg.get("text", "").strip()
+        print(f"[Telegram Webhook] message from {telegram_id}: {text[:60]!r}")
 
         # Handle Commands
         response_text = ""
@@ -129,7 +130,7 @@ class TelegramBotManager:
                     f"• Platform Fee Deduction: <b>{config.PLATFORM_FEE_PERCENT}%</b>\n"
                     f"• Dynamic Exchange Rate: <b>$1 = ₹{config.USDT_TO_INR_RATE} INR</b>\n"
                     f"• Lock Channel ID: <code>{config.LOCK_CHANNEL_ID}</code>\n"
-                    f"• Active MongoDB: <code>{db_manager.available_uris[db_manager.active_uri_index]}</code>\n\n"
+                    f"• MongoDB: <b>{'TEMP MEMORY DB' if db_manager.is_mock else 'Live'}</b> ({len(db_manager.urls)} URL)\n\n"
                     f"Use the Mini App Admin Panel to approve channels, trigger global broadcasts, and switch database URIs."
                 )
                 reply_markup = {
@@ -155,22 +156,27 @@ class TelegramBotManager:
         }
 
     async def _send_reply(self, chat_id: int, text: str, reply_markup: Optional[Dict[str, Any]] = None):
-        """Sends reply to chat ID."""
+        """Sends reply to chat ID. Logs Telegram's answer so problems are visible in Render logs."""
         if not self.token or "Example_" in self.token or not chat_id:
+            print("[Telegram Bot ERROR] No token or chat_id - reply not sent")
             return
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
-        payload = {
-            "chat_id": chat_id,
-            "text": text,
-            "parse_mode": "HTML"
-        }
+        payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
         if reply_markup:
             payload["reply_markup"] = reply_markup
         try:
-            async with httpx.AsyncClient(timeout=4.0) as client:
-                await client.post(url, json=payload)
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                r = await client.post(url, json=payload)
+                if r.status_code != 200:
+                    print(f"[Telegram Bot ERROR] sendMessage {r.status_code}: {r.text}")
+                    if reply_markup:  # retry without buttons so the user still gets an answer
+                        payload.pop("reply_markup", None)
+                        r2 = await client.post(url, json=payload)
+                        print(f"[Telegram Bot] retry without buttons -> {r2.status_code}: {r2.text[:200]}")
+                else:
+                    print(f"[Telegram Bot] reply sent to {chat_id}")
         except Exception as e:
-            print(f"[Telegram Bot Notice] Offline/test dispatch: {e}")
+            print(f"[Telegram Bot ERROR] send failed: {e}")
 
 # Global bot instance
 bot_manager = TelegramBotManager()
