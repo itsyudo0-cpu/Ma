@@ -13,7 +13,7 @@ class Config:
     APP_VERSION: str = "2.0.0"
     SERVER_HOST: str = "0.0.0.0"
     SERVER_PORT: int = int(os.environ.get("PORT", 8080))
-    BASE_URL: str = "http://localhost:8000"
+    BASE_URL: str = "https://ma-ofmm.onrender.com"
 
     # Telegram Bot & Mini App
     TELEGRAM_BOT_TOKEN: str = "9288636276:AAHppMVE_ghxA-jDw-6ElhMhfcwuAaSDZdQ"
